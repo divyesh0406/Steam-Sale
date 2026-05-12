@@ -1,0 +1,7 @@
+[
+  {"appid": 570, "name": "Dota 2", "owners": "200000000 .. 500000000", "positive": 1000000, "negative": 200000},
+  {"appid": 730, "name": "Counter-Strike 2", "owners": "200000000 .. 500000000", "positive": 800000, "negative": 300000},
+  {"appid": 440, "name": "Team Fortress 2", "owners": "100000000 .. 200000000", "positive": 700000, "negative": 100000},
+  {"appid": 1091500, "name": "Cyberpunk 2077", "owners": "20000000 .. 50000000", "positive": 500000, "negative": 50000},
+  {"appid": 413150, "name": "Stardew Valley", "owners": "20000000 .. 50000000", "positive": 600000, "negative": 20000}
+]

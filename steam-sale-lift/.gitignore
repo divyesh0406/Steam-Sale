@@ -1,0 +1,38 @@
+# Environment
+.env
+*.env
+
+# Data — never commit raw data
+data/raw/
+data/*.db
+data/*.sqlite
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# dbt
+dbt_packages/
+target/
+logs/
+.dbt/
+
+# Results (pre-computed; re-generate with make analyze)
+results/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/settings.json
+.idea/
