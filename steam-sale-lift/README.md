@@ -15,7 +15,7 @@ Steam sales are everywhere, but do they actually lift revenue — or just pull d
 ## Architecture
 
 ```
-[Steam APIs + SteamSpy + SteamCharts + SteamDB]
+[jsnli/steamappidlist (catalog) + Steam Store API + SteamSpy + SteamCharts + SteamDB]
             │
             ▼
    [Python scrapers — rate-limited, cached, idempotent]
@@ -54,8 +54,8 @@ Steam sales are everywhere, but do they actually lift revenue — or just pull d
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (`pip install uv`)
-- A free [Steam Web API key](https://steamcommunity.com/dev/apikey)
 - A free [Neon Postgres](https://neon.tech) database
+- No Steam Web API key needed — the catalog comes from the keyless community mirror [jsnli/steamappidlist](https://github.com/jsnli/steamappidlist)
 
 ### 2. Setup
 
@@ -64,7 +64,7 @@ git clone https://github.com/YOUR_USERNAME/steam-sale-lift
 cd steam-sale-lift
 uv sync
 cp .env.example .env
-# Edit .env with your STEAM_API_KEY and DATABASE_URL
+# Edit .env with your DATABASE_URL (no Steam API key needed)
 ```
 
 ### 3. Scrape (runs on your laptop — ~2 weeks of overnight runs for full dataset)
@@ -156,6 +156,7 @@ make dashboard   # starts Streamlit locally
 3. **SteamDB price coverage.** Not all games have complete price history on SteamDB.
 4. **SteamSpy accuracy.** Ownership estimates are rough ranges, not exact figures.
 5. **Review review-bombing.** Polarized review events (unrelated to sales) can contaminate the review-score outcome.
+6. **Catalog freshness depends on the upstream `jsnli/steamappidlist` repo**, which publishes daily via GitHub Actions. For our use case (historical analysis going back 5 years), daily freshness is more than sufficient.
 
 ---
 

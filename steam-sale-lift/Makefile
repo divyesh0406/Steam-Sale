@@ -34,6 +34,11 @@ scrape-prices:
 load:
 	uv run python -m src.load.ingest
 
+# ── Transform ────────────────────────────────────────────────────────────────
+
+transform:
+	uv run python -c "import os, psycopg; conn = psycopg.connect(os.environ['DATABASE_URL']); conn.autocommit = True; conn.execute(open('src/transform/stg_and_marts.sql').read()); conn.close(); print('Transform views applied.')"
+
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
 analyze:

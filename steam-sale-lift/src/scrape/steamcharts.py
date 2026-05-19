@@ -70,7 +70,7 @@ class SteamChartsClient:
             return None
 
         soup = BeautifulSoup(r.text, "lxml")
-        table = soup.find("table", {"id": "main-chart"})
+        table = soup.find("table", {"id": "main-chart"}) or soup.find("table", {"class": "common-table"})
         if not table:
             return None
 

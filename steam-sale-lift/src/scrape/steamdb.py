@@ -94,6 +94,9 @@ class SteamDBClient:
 
         if r.status_code == 404:
             return None
+        if r.status_code == 403:
+            # SteamDB is blocking automated requests — skip silently rather than crash.
+            return None
         if r.status_code in (429, 503):
             logger.warning(f"SteamDB {r.status_code} for {appid} — backing off 3 min")
             time.sleep(180)

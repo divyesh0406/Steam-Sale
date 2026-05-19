@@ -64,11 +64,9 @@ def make_reviews_response(cursor: str = "next") -> dict:
 class TestSteamClientThrottling:
     def test_cache_key_deterministic(self, tmp_path):
         """Same URL + params always produce the same cache key."""
-        import os
-        # Patch cache dir to tmp_path so we don't pollute data/raw/cache
         with patch("src.scrape.steam_api.CACHE_DIR", tmp_path):
             from src.scrape.steam_api import SteamClient
-            client = SteamClient(api_key="test")
+            client = SteamClient()
             key1 = client._cache_key("https://example.com", {"a": 1})
             key2 = client._cache_key("https://example.com", {"a": 1})
             assert key1 == key2
@@ -76,7 +74,7 @@ class TestSteamClientThrottling:
     def test_cache_key_differs_by_params(self, tmp_path):
         with patch("src.scrape.steam_api.CACHE_DIR", tmp_path):
             from src.scrape.steam_api import SteamClient
-            client = SteamClient(api_key="test")
+            client = SteamClient()
             key1 = client._cache_key("https://example.com", {"a": 1})
             key2 = client._cache_key("https://example.com", {"a": 2})
             assert key1 != key2
@@ -86,7 +84,7 @@ class TestSteamClientThrottling:
         cached = {"cached": True}
         with patch("src.scrape.steam_api.CACHE_DIR", tmp_path):
             from src.scrape.steam_api import SteamClient
-            client = SteamClient(api_key="test")
+            client = SteamClient()
             cache_path = client._cache_key("https://example.com", {})
             cache_path.write_text(json.dumps(cached), encoding="utf-8")
 

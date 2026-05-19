@@ -58,14 +58,14 @@ CREATE TABLE IF NOT EXISTS mart.fct_prices_daily (
     PRIMARY KEY (appid, date)
 );
 
-CREATE TABLE IF NOT EXISTS mart.fct_reviews (
-    review_id               BIGINT  PRIMARY KEY,
-    appid                   BIGINT  REFERENCES mart.dim_games(appid),
-    review_date             DATE    NOT NULL,
-    is_positive             BOOLEAN NOT NULL,
-    playtime_at_review_min  INT,
-    helpful_votes           INT,
-    weighted_vote_score     NUMERIC(5,4)
+-- Daily aggregate review counts (replaces per-review table to fit 512 MB limit)
+CREATE TABLE IF NOT EXISTS mart.fct_reviews_daily (
+    appid               BIGINT  REFERENCES mart.dim_games(appid),
+    review_date         DATE    NOT NULL,
+    review_count        INT     NOT NULL,
+    positive_count      INT     NOT NULL,
+    avg_playtime_min    INT,
+    PRIMARY KEY (appid, review_date)
 );
 
 CREATE TABLE IF NOT EXISTS mart.fct_players_monthly (
@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS mart.fct_steamspy (
     owners_upper    INT,
     positive        INT,
     negative        INT,
+    discount        INT,    -- current discount % at scrape time (0 = full price)
     average_playtime_2weeks INT,
     median_playtime_2weeks  INT,
     scraped_at      TIMESTAMPTZ DEFAULT NOW()
@@ -99,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_prices_sale_event
     WHERE sale_event_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_reviews_appid_date
-    ON mart.fct_reviews(appid, review_date);
+    ON mart.fct_reviews_daily(appid, review_date);
 
 CREATE INDEX IF NOT EXISTS idx_players_appid_month
     ON mart.fct_players_monthly(appid, year_month);
@@ -137,13 +138,12 @@ CREATE OR REPLACE VIEW mart.v_review_velocity AS
 -- Daily review counts per game — useful for DiD and RDD outcomes
 SELECT
     appid,
-    review_date AS date,
-    COUNT(*)                                     AS reviews_count,
-    SUM(is_positive::int)                        AS positive_count,
-    AVG(is_positive::int)                        AS positive_rate,
-    AVG(playtime_at_review_min)                  AS avg_playtime_at_review
-FROM mart.fct_reviews
-GROUP BY appid, review_date;
+    review_date                                              AS date,
+    review_count,
+    positive_count,
+    ROUND(positive_count::numeric / NULLIF(review_count, 0), 4) AS positive_rate,
+    avg_playtime_min                                         AS avg_playtime_at_review
+FROM mart.fct_reviews_daily;
 
 
 CREATE OR REPLACE VIEW mart.v_discount_depth AS

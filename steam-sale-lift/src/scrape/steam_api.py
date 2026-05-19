@@ -1,5 +1,8 @@
 """
-Steam Web API + Steam Store API + Steam Reviews API scrapers.
+Steam Store API + Steam Reviews API scrapers.
+
+Catalog (app list) is fetched from the community-maintained GitHub mirror
+jsnli/steamappidlist — no Steam Web API key required.
 
 Run modes (via __main__):
   python -m src.scrape.steam_api universe   — fetch all appids, filter to top games
@@ -13,6 +16,7 @@ import logging
 import os
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -65,24 +69,75 @@ KNOWN_SALE_EVENTS: list[dict] = [
 ]
 
 
+def fetch_app_catalog() -> list[dict]:
+    """
+    Fetch the full Steam app catalog from the community-maintained GitHub mirror
+    jsnli/steamappidlist. No API key required.
+
+    Returns list[{appid: int, name: str}] covering the full Steam catalog (~250K+ entries).
+
+    Caches to data/raw/cache/appid_list_{YYYY-MM-DD}.json so the same day's
+    run never re-fetches. Stale cache from a prior day is silently replaced.
+    """
+    today = date.today().isoformat()
+    cache_path = CACHE_DIR / f"appid_list_{today}.json"
+
+    if cache_path.exists():
+        logger.info(f"Catalog: using today's cache ({cache_path.name})")
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+
+    # Discover the latest JSON file in the data/ directory dynamically,
+    # so the script keeps working if the upstream repo renames the file.
+    contents_url = "https://api.github.com/repos/jsnli/steamappidlist/contents/data"
+    with httpx.Client(timeout=30.0, headers={"User-Agent": "SteamSaleLift/1.0"}) as client:
+        r = client.get(contents_url)
+        r.raise_for_status()
+        files = r.json()
+
+    json_files = [f for f in files if f["name"].endswith(".json")]
+    if not json_files:
+        raise RuntimeError("jsnli/steamappidlist: no .json files found in data/")
+
+    # Prefer the canonical games file; fall back to the largest .json if renamed.
+    target = next((f for f in json_files if f["name"] == "games_appid.json"), None)
+    if target is None:
+        target = sorted(json_files, key=lambda f: f.get("size", 0), reverse=True)[0]
+    raw_url = target["download_url"]
+    logger.info(f"Catalog: fetching {target['name']} from jsnli/steamappidlist …")
+
+    with httpx.Client(timeout=60.0, headers={"User-Agent": "SteamSaleLift/1.0"}) as client:
+        r = client.get(raw_url)
+        r.raise_for_status()
+        apps = r.json()
+
+    # Normalise to list[{appid: int, name: str}]
+    result: list[dict] = []
+    for entry in apps:
+        try:
+            result.append({"appid": int(entry["appid"]), "name": entry.get("name", "")})
+        except (KeyError, ValueError):
+            continue
+
+    logger.info(f"Catalog: {len(result):,} appids retrieved from {target['name']}")
+    cache_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    return result
+
+
 class SteamClient:
     """
-    Thread-safe, cache-backed HTTP client for Steam APIs.
+    Cache-backed HTTP client for Steam Store and Reviews APIs.
 
     Throttles to ~180 req/5min by default (safely under the 200 req/5min limit).
     Caches responses on disk keyed by URL + params, so re-running is free.
+    No Steam Web API key is required.
     """
 
-    BASE_API = "https://api.steampowered.com"
     BASE_STORE = "https://store.steampowered.com/api"
 
-    def __init__(self, api_key: str, requests_per_5min: int = 180):
-        if not api_key:
-            raise ValueError("STEAM_API_KEY is required. Get one at steamcommunity.com/dev/apikey")
-        self.api_key = api_key
+    def __init__(self, requests_per_5min: int = 180):
         self.client = httpx.Client(
             timeout=30.0,
-            headers={"User-Agent": "SteamSaleLift/1.0 (academic research, mittals@usc.edu)"},
+            headers={"User-Agent": "SteamSaleLift/1.0 (academic research; contact: <user-will-edit-this>)"},
             # Set birthtime cookie to bypass age-gate on mature content pages
             cookies={"birthtime": "631152000", "lastagecheckage": "1-0-1990"},
         )
@@ -125,16 +180,6 @@ class SteamClient:
         cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         return data
 
-    # ── Universe ──────────────────────────────────────────────────────────────
-
-    def get_app_list(self) -> list[dict]:
-        """Fetch all Steam appids. Returns list of {appid, name}."""
-        data = self.get(
-            f"{self.BASE_API}/ISteamApps/GetAppList/v2/",
-            params={"key": self.api_key},
-        )
-        return data["applist"]["apps"]
-
     # ── Metadata ──────────────────────────────────────────────────────────────
 
     def get_app_details(self, appid: int) -> dict | None:
@@ -153,10 +198,19 @@ class SteamClient:
 
     # ── Reviews ───────────────────────────────────────────────────────────────
 
-    def get_reviews(self, appid: int, max_reviews: int = 1000) -> list[dict]:
+    def get_reviews(
+        self,
+        appid: int,
+        max_reviews: int = 5000,
+        day_range: int = 500,
+        stop_before_ts: int | None = None,
+    ) -> list[dict]:
         """
-        Paginate through all reviews for a game using the cursor API.
-        Stops at max_reviews (default 1,000). Returns list of review dicts.
+        Paginate through reviews for a game using the cursor API.
+        day_range=500 scopes to the last ~500 days (covers Winter 2024 + buffers).
+        stop_before_ts: Unix timestamp — stop paginating once all reviews in a page
+        are older than this value. Avoids fetching far more pages than needed.
+        Returns list of review dicts.
         """
         reviews: list[dict] = []
         cursor = "*"
@@ -170,8 +224,8 @@ class SteamClient:
                 "num_per_page": "100",
                 "cursor": cursor,
                 "purchase_type": "all",
+                "day_range": str(day_range),
             }
-            # Reviews endpoint doesn't need API key but is still rate-limited
             data = self.get(base_url, params=params, use_cache=(cursor == "*"))
 
             if data.get("success") != 1:
@@ -182,6 +236,13 @@ class SteamClient:
                 break
 
             reviews.extend(batch)
+
+            # Early-stop: if every review in this page is older than our target window,
+            # we've gone far enough back — no need to paginate further.
+            if stop_before_ts is not None:
+                if all(r.get("timestamp_created", 0) < stop_before_ts for r in batch):
+                    break
+
             next_cursor = data.get("cursor", "")
             if not next_cursor or next_cursor == cursor:
                 break
@@ -192,32 +253,19 @@ class SteamClient:
 
 # ── Scraping entrypoints ───────────────────────────────────────────────────────
 
-def _load_api_key() -> str:
-    key = os.getenv("STEAM_API_KEY", "")
-    if not key or key == "your_steam_api_key_here":
-        logger.error(
-            "STEAM_API_KEY not set. Edit your .env file.\n"
-            "Get a key at: https://steamcommunity.com/dev/apikey"
-        )
-        sys.exit(1)
-    return key
-
-
 def scrape_universe(client: SteamClient, max_games: int = 3000) -> None:
     """
-    Step 1: Fetch all appids, rank by SteamSpy estimated owners,
-    and save the top `max_games` to data/raw/universe.json.
-
-    We use SteamSpy's /all endpoint (returns ~35K games sorted by owners desc)
-    to rank, then cross-reference with Steam's full app list to get accurate names.
+    Step 1: Fetch all appids from the jsnli/steamappidlist catalog mirror,
+    rank by SteamSpy estimated owners, and save the top `max_games` to
+    data/raw/universe.json.
     """
     universe_path = RAW_DIR / "universe.json"
     if universe_path.exists():
         logger.info("Universe already scraped — delete data/raw/universe.json to re-run")
         return
 
-    logger.info("Fetching full Steam app list...")
-    all_apps = client.get_app_list()
+    logger.info("Fetching full Steam app catalog (jsnli/steamappidlist mirror)...")
+    all_apps = fetch_app_catalog()
     app_map = {a["appid"]: a["name"] for a in all_apps if a.get("appid")}
     logger.info(f"Total apps on Steam: {len(app_map):,}")
 
@@ -294,11 +342,20 @@ def scrape_metadata(client: SteamClient) -> None:
     logger.info(f"Metadata done. {errors} non-game/unavailable appids.")
 
 
-def scrape_reviews(client: SteamClient, max_reviews_per_game: int = 1000) -> None:
+def scrape_reviews(client: SteamClient, max_reviews_per_game: int = 5000, day_range: int = 500) -> None:
     """
-    Step 3: For each game, paginate reviews (capped at max_reviews_per_game).
-    Saves to data/raw/reviews/{appid}.json. Idempotent.
+    Step 3: For each game, paginate reviews within the last day_range days.
+    Stops paginating early once reviews go older than the target pre-period start
+    (Oct 20 2024 = 30 days before the Winter 2024 pre-window), so high-volume
+    games don't require hundreds of pages.
+    Saves to data/raw/reviews/{appid}.json. Overwrites existing files.
     """
+    import datetime as dt
+
+    # Stop fetching once we've gone past the pre-period start (Nov 19 2024)
+    # Use a 30-day buffer so we catch any stragglers: Oct 20 2024
+    stop_before_ts = int(dt.datetime(2024, 10, 20).timestamp())
+
     universe_path = RAW_DIR / "universe.json"
     if not universe_path.exists():
         logger.error("Run 'scrape universe' first.")
@@ -308,12 +365,18 @@ def scrape_reviews(client: SteamClient, max_reviews_per_game: int = 1000) -> Non
     review_dir = RAW_DIR / "reviews"
     review_dir.mkdir(exist_ok=True)
 
-    todo = [g for g in games if not (review_dir / f"{g['appid']}.json").exists()]
-    logger.info(f"Fetching reviews for {len(todo)} games")
+    # Always re-fetch — day_range means results differ from the prior scrape
+    todo = games
+    logger.info(f"Fetching reviews for {len(todo)} games (day_range={day_range}, stop_before=2024-10-20)")
 
     for game in tqdm(todo, desc="reviews"):
         appid = game["appid"]
-        reviews = client.get_reviews(appid, max_reviews=max_reviews_per_game)
+        reviews = client.get_reviews(
+            appid,
+            max_reviews=max_reviews_per_game,
+            day_range=day_range,
+            stop_before_ts=stop_before_ts,
+        )
         out = {
             "appid": appid,
             "total_fetched": len(reviews),
@@ -344,9 +407,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     mode = sys.argv[1].lower()
-    api_key = _load_api_key()
     max_games = int(os.getenv("MAX_GAMES", "3000"))
-    client = SteamClient(api_key=api_key)
+    client = SteamClient()
 
     if mode == "universe":
         scrape_universe(client, max_games=max_games)

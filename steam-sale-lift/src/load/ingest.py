@@ -194,15 +194,22 @@ def ingest_games(conn: psycopg.Connection) -> None:
 
 
 def ingest_prices(conn: psycopg.Connection) -> None:
+    """
+    Store one row per sale-event window per game rather than one row per day.
+    For our synthetic price data (flat base price + known sale windows) this
+    reduces ~6.5M daily rows to ~75K event rows — well within the 512 MB limit.
+
+    Each row represents the first day of each distinct (price, sale_event_id) period.
+    Analysis queries join against mart.dim_sale_events for the date range.
+    """
     prices_dir = RAW_DIR / "prices"
     if not prices_dir.exists():
         logger.warning("data/raw/prices/ not found — skipping price ingest.")
         return
 
     files = list(prices_dir.glob("*.json"))
-    logger.info(f"Ingesting prices from {len(files)} files...")
+    logger.info(f"Ingesting prices from {len(files)} files (event-level, not daily)...")
 
-    BATCH = 2000
     total = 0
     for path in tqdm(files, desc="prices"):
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -213,29 +220,22 @@ def ingest_prices(conn: psycopg.Connection) -> None:
         if not history:
             continue
 
-        # Derive discount_pct: need base_price to compare against current price.
-        # We use the mode (most-common price) as a proxy for the base price.
-        prices = [r["price_cents"] for r in history if r.get("price_cents")]
-        if not prices:
-            continue
-        from collections import Counter
-        base_price_cents = Counter(prices).most_common(1)[0][0]
+        base_price_cents = history[0].get("price_cents", 0)
 
+        # Deduplicate: keep only one row per sale_event_id (the first date of the window).
+        # For non-sale days (sale_event_id=None) keep only one row total (the release day).
+        seen_events: set[str | None] = set()
         rows = []
         for rec in history:
-            price_cents = rec.get("price_cents")
-            if price_cents is None:
+            event_id = rec.get("sale_event_id")
+            if event_id in seen_events:
                 continue
+            seen_events.add(event_id)
+            price_cents = rec.get("price_cents", base_price_cents)
             discount_pct = round(
                 max(0.0, (base_price_cents - price_cents) / base_price_cents * 100), 2
             ) if base_price_cents > 0 else 0.0
-            rows.append((
-                appid,
-                rec["date"],
-                price_cents,
-                discount_pct,
-                rec.get("sale_event_id"),
-            ))
+            rows.append((appid, rec["date"], price_cents, discount_pct, event_id))
 
         if not rows:
             continue
@@ -259,14 +259,25 @@ def ingest_prices(conn: psycopg.Connection) -> None:
 
 
 def ingest_reviews(conn: psycopg.Connection) -> None:
+    """
+    Store aggregated daily review counts per game rather than individual reviews.
+    1.9M raw rows → ~300K daily-aggregate rows — fits in 512 MB.
+    Also skips appids not present in dim_games to avoid FK violations.
+    """
     review_dir = RAW_DIR / "reviews"
     if not review_dir.exists():
         logger.warning("data/raw/reviews/ not found — skipping review ingest.")
         return
 
-    files = list(review_dir.glob("*.json"))
-    logger.info(f"Ingesting reviews from {len(files)} files...")
+    # Fetch the set of valid appids already in dim_games
+    with conn.cursor() as cur:
+        cur.execute("SELECT appid FROM mart.dim_games")
+        valid_appids = {row[0] for row in cur.fetchall()}
 
+    files = list(review_dir.glob("*.json"))
+    logger.info(f"Ingesting reviews from {len(files)} files (daily aggregates)...")
+
+    from collections import defaultdict
     from datetime import datetime, timezone
     total = 0
     for path in tqdm(files, desc="reviews"):
@@ -274,23 +285,34 @@ def ingest_reviews(conn: psycopg.Connection) -> None:
         if data.get("skipped"):
             continue
         appid = data["appid"]
+        if appid not in valid_appids:
+            continue
         reviews = data.get("reviews", [])
+        if not reviews:
+            continue
 
-        rows = []
+        # Aggregate to daily counts
+        daily: dict[str, dict] = defaultdict(lambda: {"total": 0, "positive": 0, "playtime_sum": 0})
         for r in reviews:
             ts = r.get("timestamp")
             if ts is None:
                 continue
             review_date = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
-            rows.append((
-                r["review_id"],
+            daily[review_date]["total"] += 1
+            if r.get("is_positive"):
+                daily[review_date]["positive"] += 1
+            daily[review_date]["playtime_sum"] += r.get("playtime_at_review_min") or 0
+
+        rows = [
+            (
                 appid,
-                review_date,
-                bool(r.get("is_positive")),
-                r.get("playtime_at_review_min"),
-                r.get("helpful_votes"),
-                r.get("weighted_vote_score"),
-            ))
+                date_str,
+                agg["total"],
+                agg["positive"],
+                round(agg["playtime_sum"] / agg["total"]) if agg["total"] else None,
+            )
+            for date_str, agg in daily.items()
+        ]
 
         if not rows:
             continue
@@ -298,18 +320,20 @@ def ingest_reviews(conn: psycopg.Connection) -> None:
         with conn.cursor() as cur:
             cur.executemany(
                 """
-                INSERT INTO mart.fct_reviews
-                    (review_id, appid, review_date, is_positive,
-                     playtime_at_review_min, helpful_votes, weighted_vote_score)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (review_id) DO NOTHING
+                INSERT INTO mart.fct_reviews_daily
+                    (appid, review_date, review_count, positive_count, avg_playtime_min)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (appid, review_date) DO UPDATE
+                    SET review_count     = EXCLUDED.review_count,
+                        positive_count   = EXCLUDED.positive_count,
+                        avg_playtime_min = EXCLUDED.avg_playtime_min
                 """,
                 rows,
             )
         conn.commit()
         total += len(rows)
 
-    logger.info(f"Upserted {total:,} review rows.")
+    logger.info(f"Upserted {total:,} review-day rows.")
 
 
 def ingest_players(conn: psycopg.Connection) -> None:
@@ -317,6 +341,10 @@ def ingest_players(conn: psycopg.Connection) -> None:
     if not charts_dir.exists():
         logger.warning("data/raw/steamcharts/ not found — skipping player ingest.")
         return
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT appid FROM mart.dim_games")
+        valid_appids = {row[0] for row in cur.fetchall()}
 
     files = list(charts_dir.glob("*.json"))
     logger.info(f"Ingesting player history from {len(files)} files...")
@@ -327,6 +355,8 @@ def ingest_players(conn: psycopg.Connection) -> None:
         if data.get("skipped"):
             continue
         appid = data["appid"]
+        if appid not in valid_appids:
+            continue
         history = data.get("history", [])
 
         rows = [
@@ -359,6 +389,10 @@ def ingest_steamspy(conn: psycopg.Connection) -> None:
         logger.warning("data/raw/steamspy/ not found — skipping SteamSpy ingest.")
         return
 
+    with conn.cursor() as cur:
+        cur.execute("SELECT appid FROM mart.dim_games")
+        valid_appids = {row[0] for row in cur.fetchall()}
+
     files = list(spy_dir.glob("*.json"))
     logger.info(f"Ingesting SteamSpy data from {len(files)} files...")
 
@@ -367,6 +401,8 @@ def ingest_steamspy(conn: psycopg.Connection) -> None:
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("skipped") or data.get("appid") is None:
             continue
+        if data["appid"] not in valid_appids:
+            continue
         owners_lower, owners_upper = _parse_owners(data.get("owners", "0 .. 0"))
         rows.append((
             data["appid"],
@@ -374,6 +410,7 @@ def ingest_steamspy(conn: psycopg.Connection) -> None:
             owners_upper,
             data.get("positive", 0),
             data.get("negative", 0),
+            data.get("discount", 0),
             data.get("average_2weeks", 0),
             data.get("median_2weeks", 0),
         ))
@@ -383,13 +420,14 @@ def ingest_steamspy(conn: psycopg.Connection) -> None:
             """
             INSERT INTO mart.fct_steamspy
                 (appid, owners_lower, owners_upper, positive, negative,
-                 average_playtime_2weeks, median_playtime_2weeks)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                 discount, average_playtime_2weeks, median_playtime_2weeks)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (appid) DO UPDATE
                 SET owners_lower             = EXCLUDED.owners_lower,
                     owners_upper             = EXCLUDED.owners_upper,
                     positive                 = EXCLUDED.positive,
                     negative                 = EXCLUDED.negative,
+                    discount                 = EXCLUDED.discount,
                     average_playtime_2weeks  = EXCLUDED.average_playtime_2weeks,
                     median_playtime_2weeks   = EXCLUDED.median_playtime_2weeks,
                     scraped_at               = NOW()
