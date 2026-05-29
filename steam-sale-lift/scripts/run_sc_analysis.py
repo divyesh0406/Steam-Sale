@@ -19,29 +19,31 @@ load_dotenv()
 RESULTS = Path(__file__).parent.parent / "results"
 plt.rcParams.update({"figure.dpi": 120, "axes.spines.top": False, "axes.spines.right": False})
 
-print("Connecting to DB...")
-conn = psycopg.connect(os.environ["DATABASE_URL"])
+PANEL_CACHE = RESULTS / "panel_daily.parquet"
 
-# --- 1. Build panel ---
-print("Loading daily review panel...")
-panel = pd.read_sql("""
-    SELECT r.appid, r.review_date::TEXT AS review_date, r.review_count
-    FROM mart.fct_reviews_daily r
-    ORDER BY r.review_date, r.appid
-""", conn)
+# --- 1. Build panel (cache locally to avoid slow repeated DB reads) ---
+if PANEL_CACHE.exists():
+    print("Loading panel from cache...")
+    panel = pd.read_parquet(PANEL_CACHE)
+else:
+    print("Connecting to DB and loading panel (first run — will cache)...")
+    conn = psycopg.connect(os.environ["DATABASE_URL"])
+    rows = conn.execute("""
+        SELECT appid, review_date::TEXT AS review_date, review_count
+        FROM mart.fct_reviews_daily
+        ORDER BY review_date, appid
+    """).fetchall()
+    conn.close()
+    panel = pd.DataFrame(rows, columns=["appid", "review_date", "review_count"])
+    panel.to_parquet(PANEL_CACHE, index=False)
+    print(f"Cached panel to {PANEL_CACHE}")
+
 panel["log_reviews"] = np.log1p(panel["review_count"])
 print(f"Panel rows: {len(panel):,}  Games: {panel['appid'].nunique():,}")
 
 # --- 2. Select treated / donor units ---
 print("Loading treatment assignments...")
 tc = pd.read_parquet(RESULTS / "eda_treatment_control.parquet")
-games = pd.read_sql("SELECT appid, name FROM stg.games", conn)
-tc = tc.merge(games, on="appid", how="left", suffixes=("", "_db"))
-if "name_db" in tc.columns:
-    tc["name"] = tc["name_db"].fillna(tc["name"])
-    tc.drop(columns=["name_db"], inplace=True)
-
-conn.close()
 
 panel_appids = set(panel["appid"].unique())
 treated = tc[tc["treated"]].copy()
@@ -56,8 +58,13 @@ print(f"Top 5 indie treated: {treated_indie}")
 print(f"Top 5 AAA treated:   {treated_aaa}")
 
 non_treated = tc[~tc["treated"]]["appid"].tolist()
-donor_pool  = [a for a in non_treated if a in panel_appids]
-print(f"Donor pool size: {len(donor_pool):,}")
+donor_pool_full = [a for a in non_treated if a in panel_appids]
+print(f"Donor pool size (full): {len(donor_pool_full):,}")
+
+# Cap donors at 200 for tractable SLSQP (1886 variables causes solver to hang)
+rng_cap = np.random.default_rng(42)
+donor_pool = rng_cap.choice(donor_pool_full, size=min(200, len(donor_pool_full)), replace=False).tolist()
+print(f"Donor pool size (capped): {len(donor_pool)}")
 
 SC_KWARGS = dict(
     date_col="review_date",
