@@ -50,7 +50,7 @@ analyze:
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 dashboard:
-	uv run streamlit run dashboard/streamlit_app.py
+	uv run streamlit run dashboard/app.py
 
 # ── Dev / CI ──────────────────────────────────────────────────────────────────
 

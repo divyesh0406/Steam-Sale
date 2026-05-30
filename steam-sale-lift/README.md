@@ -1,175 +1,170 @@
 # Steam Sale Lift
 
-**Measuring the causal effect of Steam seasonal sales on revenue, reviews, and player engagement.**
+**Measuring the causal effect of Steam's Winter 2024 sale on game reviews — using DiD, RDD, and Synthetic Control.**
 
-Self-scraped dataset of ~3,000 games × ~5 years of daily price, review, and player-count history — analyzed with DiD + CUPED, RDD, and Synthetic Control. Free hosting, $0 cost.
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://steam-sale-lift.streamlit.app)
 
 ---
 
-## TL;DR
+## What this project does
 
-Steam sales are everywhere, but do they actually lift revenue — or just pull demand forward? This project builds a ground-up causal inference pipeline from public Steam data to answer that question rigorously. No LLMs, no agents: just applied data science.
+Steam runs major seasonal sales (Summer, Winter, Spring) where games are discounted for 10–15 days. Do those discounts actually cause more reviews — a proxy for engagement — or is any uptick just seasonal noise?
+
+This project builds a ground-up causal inference pipeline from public Steam data to answer that question with three independent methods. No LLMs, no agents: just applied data science.
+
+**Target event:** Steam Winter 2024 Sale — Dec 19 2024 to Jan 2 2025  
+**Dataset:** 2,185 games, 205,163 daily review observations (76-day window)  
+**Treatment proxy:** SteamSpy `discount > 0` snapshot → 232 treated, 1,953 control
+
+---
+
+## Results
+
+| Hypothesis | Method | Finding |
+|---|---|---|
+| H1: Does sale participation increase reviews? | DiD + CUPED | ATT = −0.032 log reviews, p = 0.293 — **not significant** |
+| H2: Does crossing 50% discount boost reviews? | Regression Discontinuity | Jump = +4.2 log reviews, p = 0.322 — **not significant** |
+| H3: Is the lift larger for indie vs AAA? | Synthetic Control | Indie p = 0.000 ✓, AAA p = 0.500 — **heterogeneity confirmed** |
+
+**Key finding:** No average effect across the full game population. But indie games show a statistically significant review lift vs their synthetic counterfactuals; AAA games do not. The result is partially driven by MiSide — a viral indie title — which warrants caution.
 
 ---
 
 ## Architecture
 
 ```
-[jsnli/steamappidlist (catalog) + Steam Store API + SteamSpy + SteamCharts + SteamDB]
-            │
-            ▼
-   [Python scrapers — rate-limited, cached, idempotent]
-   src/scrape/{steam_api, steamspy, steamcharts, steamdb}.py
-            │
-            ▼
-   [Raw JSON → data/raw/]
-            │
-            ▼
-   [Postgres (Neon free tier)]
-   raw.* → stg.* → mart.*
-            │
-            ▼
-   [Causal analyses — notebooks/ + src/analysis/]
-   DiD + CUPED | RDD | Synthetic Control
-            │
-            ▼
-   [Streamlit dashboard on HF Spaces + 3 executive memos]
+Public Steam APIs (SteamSpy, Steam Store, SteamCharts)
+        │
+        ▼
+Python scrapers  (src/scrape/)
+        │
+        ▼
+Raw JSON  →  data/raw/
+        │
+        ▼
+Neon Postgres  (raw → stg → mart)
+src/transform/stg_and_marts.sql
+        │
+        ▼
+Causal analysis  (notebooks/ + src/analysis/)
+DiD + CUPED  |  RDD  |  Synthetic Control
+        │
+        ▼
+Streamlit dashboard  (dashboard/app.py)
 ```
 
 ---
 
 ## Methods
 
-| Hypothesis | Method | Status |
-|---|---|---|
-| H1: Sales → net 30-day revenue lift? | Two-way FE DiD + CUPED | Phase 4 |
-| H2: Discounts >50% → review score drop? | Regression Discontinuity | Phase 4 |
-| H3: Indie > AAA marginal effect? | Synthetic Control | Phase 4 |
+### H1 — Difference-in-Differences + CUPED
+
+2×2 DiD comparing treated games (currently discounted per SteamSpy) to untreated games across pre-sale (Nov 19 – Dec 18) and sale windows (Dec 19 – Jan 2). CUPED (Deng et al. 2013) uses pre-period reviews as a control variate, reducing variance by **94%**. Permutation-based inference (1,000 shuffles).
+
+### H2 — Regression Discontinuity
+
+Sharp RDD on discount depth. Running variable: SteamSpy discount %. Cutoff: 50% — Steam's alleged featured-placement visibility threshold. Local linear regression with HC1 robust SEs. Bandwidth sensitivity (5–30 pp) and McCrary density test for manipulation.
+
+### H3 — Synthetic Control
+
+Abadie et al. convex weights (scipy SLSQP). Top 5 indie + top 5 AAA treated games vs a 200-game donor pool of non-treated games. Weights chosen to minimise pre-period MSPE. Placebo-based inference: p-value = fraction of 50 fake treated units with post/pre RMSPE ratio ≥ treated.
 
 ---
 
 ## Quickstart
 
-### 1. Prerequisites
+### Prerequisites
 
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (`pip install uv`)
-- A free [Neon Postgres](https://neon.tech) database
-- No Steam Web API key needed — the catalog comes from the keyless community mirror [jsnli/steamappidlist](https://github.com/jsnli/steamappidlist)
+- [`uv`](https://docs.astral.sh/uv/) — `pip install uv`
+- A free [Neon Postgres](https://neon.tech) database (512 MB free tier is sufficient)
 
-### 2. Setup
+### Setup
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/steam-sale-lift
 cd steam-sale-lift
 uv sync
 cp .env.example .env
-# Edit .env with your DATABASE_URL (no Steam API key needed)
+# Edit .env: set DATABASE_URL to your Neon connection string
 ```
 
-### 3. Scrape (runs on your laptop — ~2 weeks of overnight runs for full dataset)
+### Scrape & load
 
 ```bash
-make scrape-universe   # Day 1–2: get top 3,000 games by owner count
-make scrape-metadata   # Day 3–5: Steam Store details (~5hr overnight)
-make scrape-reviews    # Day 6–7: paginate reviews per game
-make scrape-players    # Week 2 Day 1–3: SteamSpy + SteamCharts
-make scrape-prices     # Week 2 Day 4–5: SteamDB price history
+make scrape-universe   # fetch top 3,000 games by owner count
+make scrape-metadata   # Steam Store metadata (~5 hr overnight)
+make scrape-players    # SteamSpy + SteamCharts player history
+make load              # upsert all raw JSON into Postgres
+make transform         # apply stg + mart SQL views
 ```
 
-### 4. Load to Postgres
+> **Note:** Review data in this project is synthetic — generated from SteamSpy lifetime review totals distributed across time using exponential decay and sale multipliers. The Steam Reviews API doesn't support efficient historical date-range queries for high-volume games.
+
+### Analyze
 
 ```bash
-make load   # applies schema, upserts all data idempotently
+# Recompute synthetic control (runs ~3 min, saves results/h3_sc_results.json)
+uv run python scripts/run_sc_analysis.py
+
+# Re-execute all notebooks
+make analyze
 ```
 
-### 5. Analyze
+### Dashboard
 
 ```bash
-make analyze   # executes all notebooks
-```
-
-### 6. Dashboard
-
-```bash
-make dashboard   # starts Streamlit locally
+uv run streamlit run dashboard/app.py
 ```
 
 ---
 
-## Data Dictionary
+## Project structure
 
-### mart.dim_games
-
-| Column | Type | Description |
-|---|---|---|
-| appid | BIGINT | Steam app ID (primary key) |
-| name | TEXT | Game name |
-| release_date | DATE | Release date (may be null for early access) |
-| developer | TEXT | Primary developer |
-| publisher | TEXT | Primary publisher |
-| base_price_cents | INT | Launch price in US cents |
-| is_indie | BOOLEAN | True if indie publisher + Indie genre tag |
-| is_aaa | BOOLEAN | True if publisher is in top-50 publisher list |
-| primary_genre | TEXT | First genre tag from Steam |
-| genres | TEXT[] | All genre tags |
-| owners_lower | INT | SteamSpy estimated owners lower bound |
-| owners_upper | INT | SteamSpy estimated owners upper bound |
-
-### mart.fct_prices_daily
-
-| Column | Type | Description |
-|---|---|---|
-| appid | BIGINT | FK → dim_games |
-| date | DATE | Price date |
-| price_cents | INT | Price in US cents that day |
-| discount_pct | NUMERIC | Discount % from base price (0 = full price) |
-| is_on_sale | BOOLEAN | Generated: discount_pct > 0 |
-| sale_event_id | TEXT | FK → dim_sale_events (null if not during a known sale) |
-
-### mart.fct_reviews
-
-| Column | Type | Description |
-|---|---|---|
-| review_id | BIGINT | Steam recommendation ID |
-| appid | BIGINT | FK → dim_games |
-| review_date | DATE | Date review was submitted |
-| is_positive | BOOLEAN | Thumbs up/down |
-| playtime_at_review_min | INT | Playtime at time of review (minutes) |
-| helpful_votes | INT | Number of helpful votes |
-
-### mart.fct_players_monthly
-
-| Column | Type | Description |
-|---|---|---|
-| appid | BIGINT | FK → dim_games |
-| year_month | TEXT | e.g. "April 2024" |
-| avg_players | NUMERIC | Average concurrent players that month |
-| peak_players | INT | Peak concurrent players that month |
+```
+steam-sale-lift/
+├── data/raw/               # scraped JSON (gitignored)
+├── notebooks/
+│   ├── 01_eda.ipynb                         # EDA + treatment assignment
+│   ├── 02_hypothesis_1_did.ipynb            # DiD + CUPED
+│   ├── 03_hypothesis_2_rdd.ipynb            # RDD
+│   └── 04_hypothesis_3_synthetic_control.ipynb  # SC (loads pre-computed)
+├── results/                # parquets, figures, JSON results (gitignored)
+├── src/
+│   ├── scrape/             # steam_api, steamspy, steamcharts scrapers
+│   ├── load/               # ingest pipeline → Postgres
+│   ├── transform/          # stg_and_marts.sql
+│   └── analysis/           # cuped.py, did.py, rdd.py, synthetic_control.py
+├── scripts/
+│   └── run_sc_analysis.py  # standalone SC script (avoids notebook timeout)
+├── dashboard/
+│   └── app.py              # Streamlit dashboard
+├── pyproject.toml
+└── Makefile
+```
 
 ---
 
 ## Limitations
 
-1. **No direct sales data.** Steam doesn't expose units sold. Review velocity and player counts are proxies only.
-2. **Selection into sales.** Games that go on sale are not random — they may already be trending down. DiD + synthetic control partially address this but cannot fully eliminate it.
-3. **SteamDB price coverage.** Not all games have complete price history on SteamDB.
-4. **SteamSpy accuracy.** Ownership estimates are rough ranges, not exact figures.
-5. **Review review-bombing.** Polarized review events (unrelated to sales) can contaminate the review-score outcome.
-6. **Catalog freshness depends on the upstream `jsnli/steamappidlist` repo**, which publishes daily via GitHub Actions. For our use case (historical analysis going back 5 years), daily freshness is more than sufficient.
+1. **Synthetic reviews.** Review data is generated from SteamSpy lifetime totals, not real Steam timestamps. Causal estimates reflect the simulated data-generating process, not observed user behaviour.
+2. **Treatment proxy.** `discount > 0` is a current SteamSpy snapshot, not a verified Winter 2024 participation record.
+3. **Small RDD sample.** Only 58 games within ±15 pp of the 50% cutoff — underpowered for H2.
+4. **MiSide outlier.** The indie SC result is heavily influenced by one viral game with poor pre-period synthetic fit (pre-RMSPE = 0.68).
+5. **Selection into sales.** Games that go on sale are not random — DiD and SC partially address this but cannot fully eliminate selection bias.
 
 ---
 
-## Tech Stack
+## Tech stack
 
-- **Scraping**: `httpx`, `tenacity`, `beautifulsoup4`
-- **Storage**: Neon Postgres (free tier)
-- **Transforms**: raw SQL via Makefile
-- **Analysis**: `pandas`, `statsmodels`, `linearmodels`, `scipy`
-- **Causal**: `DoWhy`, `EconML`, `pysyncon`
-- **Dashboard**: `Streamlit`, `plotly`
-- **CI**: GitHub Actions
-- **Reproducibility**: `uv`, `Makefile`
+| Layer | Tools |
+|---|---|
+| Scraping | `httpx`, `tenacity`, `beautifulsoup4` |
+| Storage | Neon Postgres (free tier), `psycopg` v3 |
+| Transforms | raw SQL |
+| Analysis | `pandas`, `numpy`, `statsmodels`, `scipy` |
+| Dashboard | `streamlit` |
+| Reproducibility | `uv`, `Makefile` |
 
 ---
 

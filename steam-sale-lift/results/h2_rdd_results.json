@@ -1,0 +1,11 @@
+{
+  "effect_at_cutoff": 4.228001178915495,
+  "se": 4.268650247119847,
+  "ci_low": -4.138399568037407,
+  "ci_high": 12.594401925868397,
+  "p_value": 0.32194087825313455,
+  "bootstrap_ci_low": -3.502936732439153,
+  "bootstrap_ci_high": 12.875425500296956,
+  "manipulation_concern": true,
+  "n_obs": 58
+}

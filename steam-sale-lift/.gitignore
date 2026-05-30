@@ -26,8 +26,10 @@ target/
 logs/
 .dbt/
 
-# Results (pre-computed; re-generate with make analyze)
-results/
+# Results — gitignore heavy files, commit pre-computed outputs for dashboard
+results/panel_daily.parquet
+results/eda_treatment_control.parquet
+results/eda_rdd_sample.parquet
 
 # OS
 .DS_Store

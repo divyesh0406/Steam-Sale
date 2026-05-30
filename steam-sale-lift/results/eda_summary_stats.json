@@ -1,0 +1,11 @@
+{
+  "total_games": 2996,
+  "indie_pct": 0.477,
+  "aaa_pct": 0.212,
+  "median_base_price_usd": 19.99,
+  "games_on_sale_snapshot": 285,
+  "avg_discount_on_sale": 65.2,
+  "treated_winter_2024": 232,
+  "control_winter_2024": 1953,
+  "rdd_sample_size": 232
+}

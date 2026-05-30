@@ -1,0 +1,81 @@
+{
+  "indie_mean_gap": 0.908237666103626,
+  "aaa_mean_gap": 0.052109341798286093,
+  "p_indie": 0.0,
+  "p_aaa": 0.5,
+  "n_indie_treated": 5,
+  "n_aaa_treated": 5,
+  "n_placebos": 50,
+  "heterogeneity": [
+    {
+      "tier": "Indie",
+      "name": "Phasmophobia",
+      "pre_rmspe": 0.0036804898756279884,
+      "mean_gap_post": -0.00043618483677286454,
+      "n_donors": 200
+    },
+    {
+      "tier": "Indie",
+      "name": "MiSide",
+      "pre_rmspe": 0.6777332259172747,
+      "mean_gap_post": 4.374087363386038,
+      "n_donors": 200
+    },
+    {
+      "tier": "Indie",
+      "name": "Subnautica",
+      "pre_rmspe": 0.007004094195010981,
+      "mean_gap_post": 0.058088595135310624,
+      "n_donors": 200
+    },
+    {
+      "tier": "Indie",
+      "name": "Human Fall Flat",
+      "pre_rmspe": 0.00803782292470013,
+      "mean_gap_post": 0.046464627857580904,
+      "n_donors": 200
+    },
+    {
+      "tier": "Indie",
+      "name": "Slay the Spire",
+      "pre_rmspe": 0.0076822222375663935,
+      "mean_gap_post": 0.06298392897597344,
+      "n_donors": 200
+    },
+    {
+      "tier": "AAA",
+      "name": "DRAGON BALL: Sparking! ZERO",
+      "pre_rmspe": 0.00204562565711687,
+      "mean_gap_post": 0.09357754273711709,
+      "n_donors": 200
+    },
+    {
+      "tier": "AAA",
+      "name": "Call of Duty\u00ae: Black Ops III",
+      "pre_rmspe": 0.0027791232945465886,
+      "mean_gap_post": 0.06599049965022884,
+      "n_donors": 200
+    },
+    {
+      "tier": "AAA",
+      "name": "Cities: Skylines II",
+      "pre_rmspe": 0.006453326720620011,
+      "mean_gap_post": 0.037361372955511445,
+      "n_donors": 200
+    },
+    {
+      "tier": "AAA",
+      "name": "Inscryption",
+      "pre_rmspe": 0.011811292860015836,
+      "mean_gap_post": -0.030455992515484274,
+      "n_donors": 200
+    },
+    {
+      "tier": "AAA",
+      "name": "Far Cry 3",
+      "pre_rmspe": 0.008202999091319534,
+      "mean_gap_post": 0.09407328616405734,
+      "n_donors": 200
+    }
+  ]
+}
